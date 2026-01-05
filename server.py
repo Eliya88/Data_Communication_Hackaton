@@ -137,18 +137,34 @@ def handle_client(conn: socket.socket, addr: Tuple[str, int], server_name: str):
 
 
 def main():
-    name = input("Server name: ")
+    # קבלת שם הצוות מהמשתמש
+    server_name = input("Enter server team name: ").strip() or "ServerTeam"
+
+    # יצירת TCP Socket והצמדה לפורט פנוי (0 אומר למערכת לבחור עבורנו)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("", 0))
     sock.listen()
-    port = sock.getsockname()[1]
-    print(f"Server up on {port}")
-    stop = threading.Event()
-    threading.Thread(target=udp_offer_broadcaster, args=(port, name, stop), daemon=True).start()
-    while True:
-        c, a = sock.accept()
-        threading.Thread(target=handle_client, args=(c, a, name), daemon=True).start()
 
+    # חילוץ הפורט שנבחר וה-IP של המכונה
+    port = sock.getsockname()[1]
+    try:
+        # ניסיון להשיג את ה-IP המקומי של המחשב
+        ip_address = socket.gethostbyname(socket.gethostname())
+    except:
+        ip_address = "127.0.0.1"  # גיבוי למקרה של תקלה בזיהוי השם
+
+    # הדפסה לפי הפורמט המדויק שנדרש במטלה
+    print(f"Server started, listening on IP address {ip_address}, TCP port {port}")
+
+    # התחלת שליחת ה-Offers ב-Thread נפרד
+    stop = threading.Event()
+    threading.Thread(target=udp_offer_broadcaster, args=(port, server_name, stop), daemon=True).start()
+
+    # לולאת קבלת לקוחות
+    while True:
+        conn, addr = sock.accept()
+        threading.Thread(target=handle_client, args=(conn, addr, server_name), daemon=True).start()
 
 if __name__ == "__main__":
     main()
