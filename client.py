@@ -26,7 +26,7 @@ def client_main(team_name="Team_Joker"):
         # Connect via TCP
         tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tcp_sock.connect((addr[0], tcp_port))
-        print("Connected to server")
+        print(f"Connected to port {tcp_port}, sending request...")
 
         # Send Request
         req = struct.pack("!IBB32s", MAGIC_COOKIE, 0x3, num_rounds, team_name.encode().ljust(32, b'\x00'))
