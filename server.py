@@ -85,7 +85,7 @@ def handle_client(conn, addr):
         print(f"Game starting with {team_name} for {num_rounds} rounds.")
 
         # --- Game Loop ---
-        for round_num in range(1, num_rounds + 1):
+        for _ in range(1, num_rounds + 1):
             deck = create_deck()
             player_hand = []
             dealer_hand = []

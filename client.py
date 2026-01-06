@@ -51,8 +51,8 @@ def print_hand(cards, owner):
     return f"\n{owner} Hand: " + ", ".join(f"{get_rank_str(card[0])} of {get_suit_char(card[1])}" for card in cards)
 
 
-def client_main(name="Team_Agado"):
-    team_name = name
+def client_main():
+    team_name = "Team Omer"
 
     # Enable reuse port for testing multiple clients on same machine
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -64,9 +64,9 @@ def client_main(name="Team_Agado"):
 
     udp_sock.bind(("", UDP_PORT))
 
-    print("Client started, listening for offer requests...")
 
     while True:
+        print("Client started, listening for offer requests...")
         # 1. Wait for Offer
         data, addr = udp_sock.recvfrom(1024)
         # Offer: Cookie(4), Type(1), Port(2), Name(32) = 39 bytes
@@ -200,7 +200,7 @@ def client_main(name="Team_Agado"):
             elif wins == 0 and ties == 0:
                 print(f"Unfortunately, you lost all {rounds} rounds. Never play again!")
             else:
-                print(f"Game over! You won {wins} rounds, lost {rounds-wins-ties} rounds and tied {ties} rounds out of {rounds}.")
+                print(f"Finished playing {rounds} rounds, win rate: {(wins/rounds)*100}%")
 
             print("All rounds finished. Disconnecting.\n")
             print("You Won ")
@@ -214,4 +214,4 @@ def client_main(name="Team_Agado"):
 
 
 if __name__ == "__main__":
-    client_main(input("Enter your team name: "))
+    client_main()
