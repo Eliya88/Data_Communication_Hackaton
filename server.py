@@ -1,170 +1,218 @@
-from constants import MAGIC_COOKIE, PAYLOAD_TYPE, UDP_PORT
 import socket
 import struct
 import threading
 import time
 import random
-from dataclasses import dataclass
-from typing import List, Tuple, Optional
-
+from constants import MAGIC_COOKIE, PAYLOAD_TYPE, UDP_PORT
 
 # --- Constants ---
 OFFER_TYPE = 0x2
 REQUEST_TYPE = 0x3
 SERVER_NAME_LEN = 32
-CLIENT_NAME_LEN = 32
 
+# Result codes
 ROUND_NOT_OVER = 0x0
 TIE = 0x1
 LOSS = 0x2
 WIN = 0x3
+
 SUITS = ["H", "D", "C", "S"]
 
-@dataclass(frozen=True)
-class Card:
-    rank: int
-    suit: int
 
-    def value(self) -> int:
+class Card:
+    def __init__(self, rank, suit):
+        self.rank = rank
+        self.suit = suit
+
+    def value(self):
+        # Ace is 11, Face cards are 10
         if self.rank == 1: return 11
         if self.rank >= 11: return 10
         return self.rank
 
-    def __str__(self) -> str:
-        rank_str = {1: "A", 11: "J", 12: "Q", 13: "K"}.get(self.rank, str(self.rank))
-        return f"{rank_str}{SUITS[self.suit]}"
+    def __str__(self):
+        r_str = {1: 'A', 11: 'J', 12: 'Q', 13: 'K'}.get(self.rank, str(self.rank))
+        return f"{r_str}{SUITS[self.suit]}"
 
 
-# --- Helpers ---
-def make_shuffled_deck() -> List[Card]:
+def create_deck():
+    # Suit: 0-3, Rank: 1-13
     deck = [Card(r, s) for s in range(4) for r in range(1, 14)]
     random.shuffle(deck)
     return deck
 
 
-def pack_fixed_name(name: str, length: int) -> bytes:
-    b = name.encode("utf-8", errors="ignore")[:length]
-    return b + b"\x00" * (length - len(b))
+def pack_server_payload(result, card=None):
+    """
+    Server -> Client Packet Structure (9 bytes):
+    Magic Cookie (4), Type (1), Result (1), Rank (2), Suit (1)
+    """
+    rank = card.rank if card else 0
+    suit = card.suit if card else 0
+    # ! = Network (Big Endian), I = Int(4), B = Char(1), B = Char(1), H = Short(2), B = Char(1)
+    return struct.pack("!IBBHB", MAGIC_COOKIE, PAYLOAD_TYPE, result, rank, suit)
 
 
-def parse_request(data: bytes) -> Optional[Tuple[int, str]]:
+def unpack_client_payload(data):
+    """
+    Client -> Server Packet Structure (10 bytes):
+    Magic Cookie (4), Type (1), Decision (5 bytes string)
+    """
     try:
-        cookie, mtype, rounds, name = struct.unpack("!IBB32s", data)
-        if cookie != MAGIC_COOKIE or mtype != REQUEST_TYPE: return None
-        return rounds, name.split(b"\x00", 1)[0].decode("utf-8", errors="ignore")
+        cookie, mtype, decision = struct.unpack("!IB5s", data)
+        return cookie, mtype, decision
     except struct.error:
-        return None
+        return None, None, None
 
 
-def pack_payload(decision_5: bytes, result: int, card: Optional[Card]) -> bytes:
-    rank, suit = (card.rank, card.suit) if card else (0, 0)
-    return struct.pack("!IB5sBHB", MAGIC_COOKIE, PAYLOAD_TYPE, decision_5, result, rank, suit)
+def handle_client(conn, addr):
+    print(f"Client connected from {addr}")
+    conn.settimeout(60.0)  # Timeout generous for gameplay
 
-
-def recv_exact(sock: socket.socket, n: int) -> Optional[bytes]:
-    chunks = []
-    got = 0
-    while got < n:
-        try:
-            part = sock.recv(n - got)
-            if not part: return None
-            chunks.append(part)
-            got += len(part)
-        except socket.timeout:
-            return None
-    return b"".join(chunks)
-
-
-def hand_total(hand: List[Card]) -> int:
-    return sum(c.value() for c in hand)
-
-
-# --- Server Logic ---
-def udp_offer_broadcaster(tcp_port: int, server_name: str, stop_event: threading.Event):
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    pkt = struct.pack("!IBH32s", MAGIC_COOKIE, OFFER_TYPE, tcp_port, pack_fixed_name(server_name, 32))
-    while not stop_event.is_set():
-        try:
-            s.sendto(pkt, ("<broadcast>", UDP_PORT))
-        except OSError:
-            pass
-        time.sleep(1.0)
-    s.close()
-
-
-def handle_client(conn: socket.socket, addr: Tuple[str, int], server_name: str):
-    conn.settimeout(10.0)
     try:
-        req_data = recv_exact(conn, 38)
-        parsed = parse_request(req_data) if req_data else None
-        if not parsed: return
-        rounds, client_name = parsed
-        print(f"[{addr[0]}] Connected: {client_name}, {rounds} rounds")
+        # 1. Receive Request (Header + Name)
+        # Request: Cookie(4), Type(1), Rounds(1), Name(32) = 38 bytes
+        req_data = conn.recv(38)
+        if len(req_data) < 38:
+            return
 
-        for r in range(1, rounds + 1):
-            deck = make_shuffled_deck()
-            player, dealer = [deck.pop(), deck.pop()], [deck.pop(), deck.pop()]
-            # Initial deal
-            for c in [player[0], player[1], dealer[0]]:
-                conn.sendall(pack_payload(b"-----", ROUND_NOT_OVER, c))
+        cookie, mtype, num_rounds, team_name = struct.unpack("!IBB32s", req_data)
+        if cookie != MAGIC_COOKIE or mtype != REQUEST_TYPE:
+            print("Invalid handshake")
+            return
 
-            # Player turn
-            while hand_total(player) <= 21:
-                incoming = recv_exact(conn, 14)
-                if not incoming: break
-                decision = struct.unpack("!IB5sBHB", incoming)[2].strip(b"\x00")
-                if decision == b"Hittt":
-                    c = deck.pop()
-                    player.append(c)
-                    conn.sendall(pack_payload(b"-----", ROUND_NOT_OVER, c))
-                else:
+        team_name = team_name.decode('utf-8').strip('\x00')
+        print(f"Game starting with {team_name} for {num_rounds} rounds.")
+
+        # --- Game Loop ---
+        for round_num in range(1, num_rounds + 1):
+            deck = create_deck()
+            player_hand = []
+            dealer_hand = []
+
+            # Deal initial cards
+            # Player gets 2 cards
+            card1 = deck.pop()
+            card2 = deck.pop()
+            player_hand.extend([card1, card2])
+
+            # Dealer gets 2 cards (one hidden)
+            d_card1 = deck.pop()  # Visible
+            d_card2 = deck.pop()  # Hidden
+            dealer_hand.extend([d_card1, d_card2])
+
+            # Send Player's cards
+            conn.sendall(pack_server_payload(ROUND_NOT_OVER, card1))
+            conn.sendall(pack_server_payload(ROUND_NOT_OVER, card2))
+
+            # Send Dealer's FIRST card only
+            conn.sendall(pack_server_payload(ROUND_NOT_OVER, d_card1))
+
+            # --- Player's Turn ---
+            player_busted = False
+            while True:
+                # Wait for decision (10 bytes)
+                data = conn.recv(10)
+                if not data: break
+
+                _, _, decision_bytes = unpack_client_payload(data)
+                decision = decision_bytes.decode('utf-8')
+
+                if decision == "Hittt":
+                    new_card = deck.pop()
+                    player_hand.append(new_card)
+
+                    # Check value immediately
+                    p_val = sum(c.value() for c in player_hand)
+
+                    if p_val > 21:
+                        # BUST! Send the card AND the Loss result together
+                        conn.sendall(pack_server_payload(LOSS, new_card))
+                        player_busted = True
+                        break  # End player turn
+                    else:
+                        # Safe hit
+                        conn.sendall(pack_server_payload(ROUND_NOT_OVER, new_card))
+
+                elif decision == "Stand":
                     break
 
-            # Dealer turn and results
-            if hand_total(player) <= 21:
-                conn.sendall(pack_payload(b"-----", ROUND_NOT_OVER, dealer[1]))
-                while hand_total(dealer) < 17:
-                    c = deck.pop()
-                    dealer.append(c)
-                    conn.sendall(pack_payload(b"-----", ROUND_NOT_OVER, c))
+            # --- Dealer's Turn (only if player didn't bust) ---
+            if not player_busted:
+                # Reveal hidden card (Send it to client)
+                # Note: Protocol doesn't have "Reveal" type, so we send it as a card update
+                conn.sendall(pack_server_payload(ROUND_NOT_OVER, d_card2))
 
-            p_sum, d_sum = hand_total(player), hand_total(dealer)
-            res = WIN if (p_sum <= 21 and (d_sum > 21 or p_sum > d_sum)) else (TIE if p_sum == d_sum else LOSS)
-            conn.sendall(pack_payload(b"-----", res, None))
+                # Dealer logic: Hit until >= 17
+                while sum(c.value() for c in dealer_hand) < 17:
+                    new_card = deck.pop()
+                    dealer_hand.append(new_card)
+                    conn.sendall(pack_server_payload(ROUND_NOT_OVER, new_card))
+
+                # Calculate Winner
+                p_sum = sum(c.value() for c in player_hand)
+                d_sum = sum(c.value() for c in dealer_hand)
+
+                result = 0
+                if d_sum > 21:  # Dealer bust
+                    result = WIN
+                elif p_sum > d_sum:
+                    result = WIN
+                elif p_sum == d_sum:
+                    result = TIE
+                else:
+                    result = LOSS
+
+                # Send Final Result (No card attached)
+                conn.sendall(pack_server_payload(result, None))
+
+    except Exception as e:
+        print(f"Error handling client {addr}: {e}")
     finally:
         conn.close()
 
 
-def main():
-    # קבלת שם הצוות מהמשתמש
-    server_name = input("Enter server team name: ").strip() or "ServerTeam"
+def udp_broadcast(tcp_port):
+    """ Broadcasts offer every 1 second """
+    udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
-    # יצירת TCP Socket והצמדה לפורט פנוי (0 אומר למערכת לבחור עבורנו)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("", 0))
-    sock.listen()
+    # Pad name to 32 bytes
+    server_name = "BlackjackServer".encode('utf-8')
+    server_name += b'\x00' * (32 - len(server_name))
 
-    # חילוץ הפורט שנבחר וה-IP של המכונה
-    port = sock.getsockname()[1]
+    # Offer: Cookie(4), Type(1), Port(2), Name(32)
+    packet = struct.pack("!IBH32s", MAGIC_COOKIE, OFFER_TYPE, tcp_port, server_name)
+
+    while True:
+        udp_sock.sendto(packet, ('<broadcast>', UDP_PORT))
+        time.sleep(1)
+
+
+def start_server():
+    # Find local IP
     try:
-        # ניסיון להשיג את ה-IP המקומי של המחשב
         ip_address = socket.gethostbyname(socket.gethostname())
     except:
-        ip_address = "127.0.0.1"  # גיבוי למקרה של תקלה בזיהוי השם
+        ip_address = '127.0.0.1'
 
-    # הדפסה לפי הפורמט המדויק שנדרש במטלה
-    print(f"Server started, listening on IP address {ip_address}, TCP port {port}")
+    # Setup TCP
+    tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    tcp_sock.bind(("", 0))  # Ephemeral port
+    tcp_sock.listen(5)
+    tcp_port = tcp_sock.getsockname()[1]
 
-    # התחלת שליחת ה-Offers ב-Thread נפרד
-    stop = threading.Event()
-    threading.Thread(target=udp_offer_broadcaster, args=(port, server_name, stop), daemon=True).start()
+    print(f"Server started, listening on IP address {ip_address}")
 
-    # לולאת קבלת לקוחות
+    # Start UDP Broadcast thread
+    t = threading.Thread(target=udp_broadcast, args=(tcp_port,), daemon=True)
+    t.start()
+
     while True:
-        conn, addr = sock.accept()
-        threading.Thread(target=handle_client, args=(conn, addr, server_name), daemon=True).start()
+        conn, addr = tcp_sock.accept()
+        t_client = threading.Thread(target=handle_client, args=(conn, addr), daemon=True)
+        t_client.start()
+
 
 if __name__ == "__main__":
-    main()
+    start_server()

@@ -1,99 +1,147 @@
-from constants import MAGIC_COOKIE, PAYLOAD_TYPE, UDP_PORT
 import socket
 import struct
+from constants import MAGIC_COOKIE, PAYLOAD_TYPE, UDP_PORT
 
 
-def client_main(team_name="Team_Joker"):
-    team_name = team_name
-    while True:
-        num_rounds = int(input("How many rounds to play? "))
-        print("Client started, listening for offer requests...")
+def pack_client_decision(decision):
+    """
+    Client -> Server (10 bytes): Cookie(4), Type(1), Decision(5)
+    """
+    # Decision must be 5 bytes: "Hittt" or "Stand"
+    return struct.pack("!IB5s", MAGIC_COOKIE, PAYLOAD_TYPE, decision)
 
-        # Listen for UDP offer
-        udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+def unpack_server_payload(data):
+    """
+    Server -> Client (9 bytes): Cookie(4), Type(1), Result(1), Rank(2), Suit(1)
+    """
+    if len(data) < 9: return None
+    cookie, mtype, result, rank, suit = struct.unpack("!IBBHB", data)
+    return result, rank, suit
+
+
+def get_suit_char(suit_int):
+    return ["H", "D", "C", "S"][suit_int]
+
+
+def get_rank_str(rank_int):
+    if rank_int == 1: return "Ace"
+    if rank_int == 11: return "Jack"
+    if rank_int == 12: return "Queen"
+    if rank_int == 13: return "King"
+    return str(rank_int)
+
+
+def client_main():
+    team_name = "Team_Joker"
+
+    # Enable reuse port for testing multiple clients on same machine
+    udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    except AttributeError:
+        # Some OS (like Windows) don't support SO_REUSEPORT, use SO_REUSEADDR
         udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        udp_sock.bind(("", UDP_PORT))
 
-        # Receive Offer
+    udp_sock.bind(("", UDP_PORT))
+
+    print("Client started, listening for offer requests...")
+
+    while True:
+        # 1. Wait for Offer
         data, addr = udp_sock.recvfrom(1024)
-        cookie, mtype, tcp_port, s_name = struct.unpack("!IBH32s", data)
+        # Offer: Cookie(4), Type(1), Port(2), Name(32) = 39 bytes
+        if len(data) < 39: continue
 
-        # Validate Offer
-        if cookie != MAGIC_COOKIE: continue
-        print(f"Received offer from {addr[0]}")
-        udp_sock.close()
+        cookie, mtype, server_port, server_name = struct.unpack("!IBH32s", data[:39])
+        if cookie != MAGIC_COOKIE or mtype != 0x2:
+            continue
 
-        # Connect via TCP
-        tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        tcp_sock.connect((addr[0], tcp_port))
-        print(f"Connected to port {tcp_port}, sending request...")
+        print(f"Received offer from {addr[0]}, attempting to connect...")
 
-        # Send Request
-        req = struct.pack("!IBB32s", MAGIC_COOKIE, 0x3, num_rounds, team_name.encode().ljust(32, b'\x00'))
-        tcp_sock.sendall(req)
-        print("Request sent, waiting for game to start...")
+        # 2. Connect TCP
+        try:
+            tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            tcp_sock.connect((addr[0], server_port))
 
+            # 3. Send Request
+            # Ask user for rounds
+            try:
+                rounds = int(input("How many rounds you want to play? "))
+            except:
+                rounds = 1
 
-        wins = 0
-        # Set timeout for TCP socket
-        tcp_sock.settimeout(5.0)
-        # Play rounds
-        for r in range(num_rounds):
-            print(f"\n--- Round {r + 1} ---")
-            player_hand = []
+            # Request: Cookie(4), Type(1), Rounds(1), Name(32)
+            name_bytes = team_name.encode('utf-8') + b'\x00' * (32 - len(team_name))
+            req_pkt = struct.pack("!IBB32s", MAGIC_COOKIE, 0x3, rounds, name_bytes)
+            tcp_sock.sendall(req_pkt)
 
-            # Receive initial 3 cards
-            for _ in range(3):
-                p_data = tcp_sock.recv(14)
-                _, _, _, _, rank, suit = struct.unpack("!IB5sBHB", p_data)
-                print(f"Card received: rank {rank}, suit {suit}")
+            # --- Game Loop ---
+            for r in range(rounds):
+                print(f"\n--- Round {r + 1} ---")
 
-            # Initialize round result
-            current_result = 0x0
+                # Receive initial cards (Player 1, Player 2, Dealer 1)
+                # We expect 3 packets of 9 bytes each
+                for i in range(2):
+                    data = tcp_sock.recv(9)
+                    res, rank, suit = unpack_server_payload(data)
+                    print(f"Your card: {get_rank_str(rank)} of {get_suit_char(suit)}")
 
-            # Player Turn
-            while current_result == 0x0:
-                # Ask player for decision
-                choice = input("Hit or Stand? (h/s): ")
-                decision = b"Hittt" if choice.lower() == 'h' else b"Stand"
+                data = tcp_sock.recv(9)
+                res, rank, suit = unpack_server_payload(data)
+                print(f"Dealer card: {get_rank_str(rank)} of {get_suit_char(suit)}")
 
-                # Send player decision
-                tcp_sock.sendall(struct.pack("!IB5sBHB", MAGIC_COOKIE, PAYLOAD_TYPE, decision, 0, 0, 0))
+                # Gameplay Loop
+                game_over = False
+                while not game_over:
+                    # Check if server already sent "Loss" (e.g. from previous hit busting)
+                    if res != 0:
+                        game_over = True
+                        break
 
-                # Wait for server response to our action
-                p_data = tcp_sock.recv(14)
-                _, _, _, res, rank, suit = struct.unpack("!IB5sBHB", p_data)
+                    choice = input("Type 'h' to Hit, 's' to Stand: ").lower()
+                    if choice == 'h':
+                        decision = b"Hittt"
+                        tcp_sock.sendall(pack_client_decision(decision))
 
-                if decision == b"Hittt" and current_result == 0:
-                    print(f"New card received: {rank}")
+                        # Get response (Card or Result)
+                        data = tcp_sock.recv(9)
+                        res, rank, suit = unpack_server_payload(data)
 
-                if decision == b"Stand":
-                    break
+                        if rank != 0:
+                            print(f"You drew: {get_rank_str(rank)} of {get_suit_char(suit)}")
 
-            # If the player hasn't already lost, we must listen for Dealer's cards
-            while current_result == 0:
-                # Wait for dealer's action
-                p_data = tcp_sock.recv(14)
-                _, _, _, current_result, rank, suit = struct.unpack("!IB5sBHB", p_data)
+                    elif choice == 's':
+                        decision = b"Stand"
+                        tcp_sock.sendall(pack_client_decision(decision))
+                        break  # Exit user input loop, wait for dealer
 
-                # Show dealer's revealed/drawn card
-                if rank != 0:
-                    print(f"Dealer reveals/draws: {rank}")
+                # Wait for Dealer sequence and final result
+                while not game_over:
+                    data = tcp_sock.recv(9)
+                    if not data: break
+                    res, rank, suit = unpack_server_payload(data)
 
+                    if res != 0:  # Game ended (Win/Loss/Tie)
+                        if res == 2:
+                            print("You Lost!")
+                        elif res == 3:
+                            print("You Won!")
+                        elif res == 1:
+                            print("Tie!")
+                        game_over = True
+                    else:
+                        # Dealer drew a card
+                        print(f"Dealer drew: {get_rank_str(rank)} of {get_suit_char(suit)}")
 
-            # Display Final Round Result
-            if current_result == 0x3:
-                print(">>> RESULT: You won, now go do something with your life!")
-                wins += 1
-            elif current_result == 0x2:
-                print(">>> RESULT: You lost, please dont play this game ever again!")
-            elif current_result == 0x1:
-                print(">>> RESULT: It's a butterfly tie!")
+            print("All rounds finished. Disconnecting.")
+            tcp_sock.close()
+            # Loop back to UDP listening
 
-        win_rates = wins / num_rounds * 100 if num_rounds > 0 else 0
-        print(f"\nFinished playing {num_rounds} rounds, win rate: {win_rates}%")
-        tcp_sock.close()
+        except Exception as e:
+            print(f"Connection error: {e}")
+            if 'tcp_sock' in locals(): tcp_sock.close()
 
 
 if __name__ == "__main__":
-    client_main(input("Enter your team name: "))
+    client_main()
