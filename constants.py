@@ -10,7 +10,7 @@ REQUEST_TYPE = 0x3
 PAYLOAD_TYPE = 0x4
 
 # Game Results (Server -> Client)
-RESULT_CONTINUE = 0x0
+
 RESULT_TIE = 0x1
 RESULT_LOSS = 0x2
 RESULT_WIN = 0x3
