@@ -60,7 +60,7 @@ def print_hand(cards, owner):
 
 
 def client_main():
-    team_name = "Team Ido"
+    team_name = "Team omer"
 
     while True:
         # Enable reuse port for testing multiple clients on same machine
@@ -85,7 +85,7 @@ def client_main():
                 continue
 
             s_name = server_name.decode('utf-8').strip('\x00')
-            print(f"Received offer from server at {addr[0]}, attempting to connect...")
+            print(f"Received offer from {server_name} at {addr[0]}, attempting to connect...")
 
             # Connect TCP
             tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
