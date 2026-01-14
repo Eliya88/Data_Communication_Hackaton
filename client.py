@@ -1,6 +1,6 @@
 import socket
 import struct
-from constants import MAGIC_COOKIE, PAYLOAD_TYPE, UDP_PORT
+from constants import *
 
 
 def pack_client_decision(decision):
@@ -22,8 +22,8 @@ def unpack_server_payload(data):
     except struct.error:
         return None
 
-def get_suit_char(suit_int):
-    return ["Heart", "Diamond", "Clubs", "Spades"][suit_int]
+# def get_suit_char(suit_int):
+#     return ["Heart", "Diamond", "Clubs", "Spades"][suit_int]
 
 def get_rank_str(rank_int):
     if rank_int == 1: return "Ace"
@@ -53,11 +53,10 @@ def calculate_hand(cards):
         total -= 10
         aces -= 1
 
-    return (total, aces)
+    return total, aces
 
 def print_hand(cards, owner):
     return f"\n{owner} Hand: " + ", ".join(f"{get_rank_str(card[0])} of {get_suit_char(card[1])}" for card in cards)
-
 
 def client_main():
     team_name = "Team omer"
@@ -81,7 +80,7 @@ def client_main():
             if len(data) < 39: continue
 
             cookie, mtype, server_port, server_name = struct.unpack("!IBH32s", data[:39])
-            if cookie != MAGIC_COOKIE or mtype != 0x2:
+            if cookie != MAGIC_COOKIE or mtype != OFFER_TYPE:
                 continue
 
             s_name = server_name.decode('utf-8').strip('\x00')
@@ -102,7 +101,7 @@ def client_main():
 
             # Request: Cookie(4), Type(1), Rounds(1), Name(32)
             name_bytes = team_name.encode('utf-8') + b'\x00' * (32 - len(team_name))
-            req_pkt = struct.pack("!IBB32s", MAGIC_COOKIE, 0x3, rounds, name_bytes)
+            req_pkt = struct.pack("!IBB32s", MAGIC_COOKIE, REQUEST_TYPE, rounds, name_bytes)
             tcp_sock.sendall(req_pkt)
 
             wins=0
@@ -110,7 +109,7 @@ def client_main():
 
             # --- Game Loop ---
             for r in range(rounds):
-                print(f"\n--- Round {r + 1} ---")
+                print(f"\n{Colors.GREEN}{f"--- Round {r + 1} ---"}{Colors.RESET}")
 
                 player_cards = []
                 dealer_cards = []
@@ -196,8 +195,8 @@ def client_main():
                             raise ConnectionError("Failed to receive dealer card/result.")
                         res, rank, suit = package
 
-                    if res != 0:  # Game ended (Win/Loss/Tie)
-                        if res == 2:
+                    if res != ROUND_NOT_OVER:  # Game ended (Win/Loss/Tie)
+                        if res == LOSS:
                             hand, ace = calculate_hand(player_cards)
                             if hand > 21:
                                 print("You Busted!")
@@ -206,19 +205,19 @@ def client_main():
                                 print(f"Dealer have total value of {calculate_hand(dealer_cards)[0]}")
                                 print(f"Your hand total: {hand}\n")
                                 print("You Lost!")
-                        elif res == 3:
+                        elif res == WIN:
                             wins+=1
                             print(print_hand(dealer_cards, "Dealer"))
                             print(f"Dealer have total value of {calculate_hand(dealer_cards)[0]}\n")
                             print("You Won!")
 
-                        elif res == 1:
+                        elif res == TIE:
                             ties+=1
                             print(print_hand(dealer_cards, "Dealer"))
                             print(f"Dealer have total value of {calculate_hand(dealer_cards)[0]}\n")
                             print("Tie!")
 
-                        print("Round over.\n")
+                        print(f"{Colors.CYAN}Round over.{Colors.RESET}\n")
                         break
                     else:
                         # Dealer drew a card

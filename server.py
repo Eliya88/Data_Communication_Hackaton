@@ -3,21 +3,12 @@ import struct
 import threading
 import time
 import random
-from constants import MAGIC_COOKIE, PAYLOAD_TYPE, UDP_PORT
+from constants import *
 
 # --- Constants ---
-OFFER_TYPE = 0x2
-REQUEST_TYPE = 0x3
 SERVER_NAME_LEN = 32
 
-# Result codes
-ROUND_NOT_OVER = 0x0
-TIE = 0x1
-LOSS = 0x2
-WIN = 0x3
-
 SUITS = ["Heart", "Diamond", "Clubs", "Spades"]
-
 
 class Card:
     def __init__(self, rank, suit):
@@ -29,13 +20,15 @@ class Card:
         if self.__rank >= 11: return 10
         return self.__rank
 
+    def send_rank(self):
+        return self.__rank
+
     def get_suit(self):
         return self.__suit
 
     def __str__(self):
-        r_str = {1: 'Ace', 11: 'Jak', 12: 'Queen', 13: 'King'}.get(self.__rank, str(self.__rank))
-        return f"{r_str} of {SUITS[self.__suit]}"
-
+        r_str = {1: 'Ace', 11: 'Jack', 12: 'Queen', 13: 'King'}.get(self.__rank, str(self.__rank))
+        return f"{r_str} of {get_suit_char(self.__suit)}"
 
 def calculate_hand_value(cards):
     """
@@ -62,17 +55,15 @@ def create_deck():
     random.shuffle(deck)
     return deck
 
-
 def pack_server_payload(result, card=None):
     """
     Server -> Client Packet Structure (9 bytes):
     Magic Cookie (4), Type (1), Result (1), Rank (2), Suit (1)
     """
-    rank = card.get_rank() if card else 0
+    rank = card.send_rank() if card else 0
     suit = card.get_suit() if card else 0
     # ! = Network (Big Endian), I = Int(4), B = Char(1), B = Char(1), H = Short(2), B = Char(1)
     return struct.pack("!IBBHB", MAGIC_COOKIE, PAYLOAD_TYPE, result, rank, suit)
-
 
 def unpack_client_payload(data):
     """
@@ -91,13 +82,14 @@ def handle_client(conn, addr):
 
     def game_log(message):
         if round_num:
-            print(f"[Team: {team_name}, Round: {round_num}] {message}")
+            log = f"[Team: {team_name}, Round: {round_num}]"
+            print(f"{Colors.RED}{log}{Colors.RESET} {message}")
         else:
             print(f"[Client {addr}] {message}")
 
     game_log(f"Client connected from {addr}")
 
-    conn.settimeout(120.0)
+    conn.settimeout(90)
     try:
         try:
             # Receive Request (Header + Name)
@@ -212,7 +204,7 @@ def handle_client(conn, addr):
                 # Calculate Winner
                 p_sum = calculate_hand_value(player_hand)
                 d_sum = calculate_hand_value(dealer_hand)
-                game_log(f"Final value: {p_sum}  |  Dealer final value: {d_sum}")
+                game_log(f"Player final value: {p_sum}  |  Dealer final value: {d_sum}")
 
                 if d_sum > 21:  # Dealer bust
                     result = WIN
@@ -226,6 +218,10 @@ def handle_client(conn, addr):
                 if result == WIN:
                     game_log(f"Player WINS the round!")
                     total_wins += 1
+                if result == TIE:
+                    game_log(f"Round is a TIE.")
+                if result == LOSS:
+                    game_log(f"Player LOSES the round.")
         game_log(f"Game over. Total Wins: {total_wins} out of {num_rounds}\n")
 
     except Exception as e:
@@ -284,6 +280,7 @@ def start_server():
     except KeyboardInterrupt:
         print("Server shutting down.")
     finally:
+        print("Close Connection")
         tcp_sock.close()
 
 if __name__ == "__main__":
